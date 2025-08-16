@@ -1,0 +1,41 @@
+name: "🐞 Bug report"
+description: Report a defect
+labels: ["type: bug", "status: needs info"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What’s broken?
+      placeholder: Clear, actionable title/summary
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps, inputs, and environment
+      placeholder: "1) … 2) … 3) …"
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "Prod/Preview/Local; browser/version"
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+  - type: input
+    id: logs
+    attributes:
+      label: Logs/Screenshots link
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      options: ["size: XS","size: S","size: M","size: L","size: XL"]
+    validations: { required: true }
