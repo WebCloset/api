@@ -1,0 +1,37 @@
+name: "✨ Feature request"
+description: New capability or significant improvement
+labels: ["type: feature", "status: needs info"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Opportunity
+      description: What user problem are we solving?
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: User story + acceptance criteria
+      placeholder: |
+        As a <user>, I want <capability> so that <benefit>.
+        AC:
+        - ...
+        - ...
+    validations: { required: true }
+  - type: checkboxes
+    id: areas
+    attributes:
+      label: Areas
+      options:
+        - label: area: ui
+        - label: area: api
+        - label: area: search
+        - label: area: ingestion
+        - label: area: ops
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      options: ["size: XS","size: S","size: M","size: L","size: XL"]
+    validations: { required: true }
