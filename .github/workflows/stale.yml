@@ -1,0 +1,16 @@
+name: Stale
+on:
+  schedule:
+    - cron: "0 9 * * 1-5"  # 9am weekdays
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          days-before-stale: 14
+          days-before-close: 7
+          stale-issue-message: "Going stale — please update or it’ll auto-close in 7 days."
+          stale-pr-message: "This PR is stale — please push updates or leave a note."
+          exempt-issue-labels: "priority: P0,priority: P1,status: blocked"
+          exempt-pr-labels: "priority: P0,priority: P1,status: blocked"
