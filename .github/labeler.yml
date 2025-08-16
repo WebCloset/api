@@ -1,0 +1,18 @@
+"type: frontend":
+  - "app-web/**"
+"area: ui":
+  - "app-web/**"
+
+"type: backend":
+  - "api/**"
+"area: api":
+  - "api/**"
+
+"type: ingestion":
+  - "ingestion/**"
+"area: ingestion":
+  - "ingestion/**"
+
+"type: docs":
+  - "**/*.md"
+  - "docs/**"
