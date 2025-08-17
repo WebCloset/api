@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: WebCloset Roadmap
+    url: https://github.com/WebCloset
+    about: Check phases/tasks before filing
