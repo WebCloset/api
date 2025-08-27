@@ -1,0 +1,16 @@
+name: "🧹 Chore / Tech Debt"
+description: Refactor, infra, docs, or maintenance
+labels: ["type: chore", "status: ready"]
+body:
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What will change? Keep it small and scoped.
+    validations: { required: true }
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      options: ["size: XS","size: S","size: M","size: L","size: XL"]
+    validations: { required: true }

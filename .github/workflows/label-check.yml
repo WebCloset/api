@@ -1,0 +1,33 @@
+name: Enforce Labels
+on:
+  pull_request:
+    types: [opened, edited, labeled, unlabeled, synchronize]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require exactly one type label
+        uses: mheap/github-action-required-labels@v5
+        with:
+          mode: exactly
+          count: 1
+          labels: |
+            type: bug
+            type: feature
+            type: chore
+            type: ingestion
+            type: search
+            type: frontend
+            type: backend
+            type: docs
+      - name: Require at least one size label
+        uses: mheap/github-action-required-labels@v5
+        with:
+          mode: minimum
+          count: 1
+          labels: |
+            size: XS
+            size: S
+            size: M
+            size: L
+            size: XL
