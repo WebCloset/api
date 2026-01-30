@@ -1,1 +1,1 @@
-web: uvicorn app.webcloset_api:app --host 0.0.0.0 --port $PORT
+web: uvicorn app.webcloset_api:newapi --host 0.0.0.0 --port $PORT

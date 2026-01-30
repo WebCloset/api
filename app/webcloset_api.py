@@ -12,7 +12,7 @@ brand_name_mapping = {'louis vuitton': 'Louis Vuitton', 'adidas': 'Adidas', 'guc
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(
+newapi = FastAPI(
     title="WebCloset API",
     version="1.0.0",
     description="Fashion marketplace aggregation API"
@@ -168,13 +168,13 @@ def search_index_new(query_text):
     return items
 
 
-@app.get("/nlp/search/")
+@newapi.get("/nlp/search/")
 async def nlp_search_items(query: str = Query("", description="NLP Search items")):
     return search_index_new(query)
 
 
 # Add API info endpoint
-@app.get("/info")
+@newapi.get("/info")
 async def api_info():
     """API information and statistics"""
     return {
