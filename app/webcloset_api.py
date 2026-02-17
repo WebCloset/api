@@ -8,6 +8,7 @@ import re
 from pydantic import BaseModel
 import psycopg2
 from elasticsearch import Elasticsearch
+from fastapi.middleware.cors import CORSMiddleware
 
 from services.ad_service import generate_group_ad_script
 
@@ -35,6 +36,15 @@ if PROD_DOMAIN:
     ALLOWED_ORIGINS.append(f"https://{PROD_DOMAIN}")
     ALLOWED_ORIGINS.append(f"https://www.{PROD_DOMAIN}")
 
+newapi.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"]
+)
+
 class GenerateAdRequest(BaseModel):
     canonical_product_id: str
 
@@ -45,7 +55,7 @@ class UpdateAdRequest(BaseModel):
 
 
 def get_es_connection():
-    es_url = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200/")
+    es_url = os.getenv("ELASTICSEARCH_URL", "https://elasticsearch-production-3ce1.up.railway.app")
     es_username = os.getenv("ELASTICSEARCH_USERNAME", None)
     es_password = os.getenv("ELASTICSEARCH_PASSWORD", None)
 
