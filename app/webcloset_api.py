@@ -1,11 +1,15 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 import os
 from datetime import datetime
 from dotenv import load_dotenv
 
 import re
 
+from pydantic import BaseModel
+import psycopg2
 from elasticsearch import Elasticsearch
+
+from services.ad_service import generate_group_ad_script
 
 brand_name_mapping = {'louis vuitton': 'Louis Vuitton', 'adidas': 'Adidas', 'gucci': 'Gucci', 'nike': 'Nike'}
 
@@ -31,6 +35,14 @@ if PROD_DOMAIN:
     ALLOWED_ORIGINS.append(f"https://{PROD_DOMAIN}")
     ALLOWED_ORIGINS.append(f"https://www.{PROD_DOMAIN}")
 
+class GenerateAdRequest(BaseModel):
+    canonical_product_id: str
+
+
+class UpdateAdRequest(BaseModel):
+    script_body: str
+    edited_by: str
+
 
 def get_es_connection():
     es_url = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200/")
@@ -44,6 +56,12 @@ def get_es_connection():
     return Elasticsearch(
         es_url
     )
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = "postgresql://neondb_owner:npg_5LdJSKuC8bFY@ep-damp-field-aey694y3-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL, connect_timeout=10)
 
 
 def build_es_query_new(user_query):
@@ -172,6 +190,134 @@ def search_index_new(query_text):
 async def nlp_search_items(query: str = Query("", description="NLP Search items")):
     return search_index_new(query)
 
+# ----------------------------
+# Generate & Store Script
+# ----------------------------
+@newapi.post("/ads/generate")
+def generate_ad(request: GenerateAdRequest):
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 1️⃣ Fetch canonical product
+        cursor.execute("""
+            SELECT t1.brand, t1.title, t1.size, t1.category, t1.price_cents, t1.currency, t1.color FROM item_source AS t1
+            INNER JOIN item_links AS t2 ON t1.id = t2.source_id WHERE t2.canonical_id = %s
+        """, (request.canonical_product_id,))
+        product = cursor.fetchall()
+
+        if not product:
+            raise HTTPException(status_code=404, detail="Canonical product not found")
+
+        # 3️⃣ Generate script
+        script = generate_group_ad_script(product)
+
+        # 4️⃣ Store in ad_generators
+        cursor.execute("""
+            INSERT INTO ad_generators
+            (canonical_product_id, generated_script)
+            VALUES (%s, %s)
+            RETURNING id
+        """, (request.canonical_product_id, script))
+
+        ad_id = cursor.fetchone()[0]
+
+        # 5️⃣ Store version 1
+        cursor.execute("""
+            INSERT INTO ad_generator_versions
+            (ad_generator_id, version_number, script_body)
+            VALUES (%s, 1, %s)
+        """, (ad_id, script))
+
+        conn.commit()
+
+        return {
+            "ad_id": ad_id,
+            "script": script
+        }
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@newapi.patch("/ads/product/{canonical_product_id}")
+def update_latest_ad(canonical_product_id: str, request: UpdateAdRequest):
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 1️⃣ Get latest ad for product
+        cursor.execute("""
+            SELECT id
+            FROM ad_generators
+            WHERE canonical_product_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (canonical_product_id,))
+
+        ad = cursor.fetchone()
+
+        if not ad:
+            raise HTTPException(status_code=404, detail="No ad found for product")
+
+        ad_id = ad[0]
+
+        # 2️⃣ Update main ad
+        cursor.execute("""
+            UPDATE ad_generators
+            SET generated_script = %s,
+                is_override = TRUE,
+                status = 'edited',
+                updated_at = NOW()
+            WHERE id = %s
+        """, (request.script_body, ad_id))
+
+        # 3️⃣ Insert new version
+        cursor.execute("""
+            INSERT INTO ad_generator_versions
+            (ad_generator_id, version_number, script_body, edited_by)
+            VALUES (
+                %s,
+                (SELECT COALESCE(MAX(version_number),0)+1
+                 FROM ad_generator_versions
+                 WHERE ad_generator_id = %s),
+                %s,
+                %s
+            )
+        """, (ad_id, ad_id, request.script_body, request.edited_by))
+
+        conn.commit()
+
+        return {"message": "Latest ad updated successfully"}
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@newapi.get("/ads/product/{canonical_product_id}")
+def list_ads_for_product(canonical_product_id: str):
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            SELECT id, generated_script, status, created_at
+            FROM ad_generators
+            WHERE canonical_product_id = %s
+            ORDER BY created_at DESC
+        """, (canonical_product_id,))
+
+        ads = cursor.fetchall()
+
+        return ads
+
+    finally:
+        cursor.close()
+        conn.close()
 
 # Add API info endpoint
 @newapi.get("/info")
@@ -191,4 +337,3 @@ async def api_info():
         "cors_origins": ALLOWED_ORIGINS,
         "timestamp": datetime.utcnow().isoformat()
     }
-
