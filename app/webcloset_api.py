@@ -1,9 +1,14 @@
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Header
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+import hashlib
+import hmac
+import secrets
+import base64
 
 import re
+import json
 
 from pydantic import BaseModel
 import psycopg2
@@ -54,6 +59,21 @@ class UpdateAdRequest(BaseModel):
     edited_by: str
 
 
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AdminSourceToggleRequest(BaseModel):
+    enabled: bool
+
+
+class AdminTokenData(BaseModel):
+    username: str
+    issued_at: int
+    expires_at: int
+
+
 def get_es_connection():
     es_url = os.getenv("ELASTICSEARCH_URL", "https://elasticsearch-production-3ce1.up.railway.app")
     es_username = os.getenv("ELASTICSEARCH_USERNAME", None)
@@ -72,6 +92,120 @@ DATABASE_URL = "postgresql://neondb_owner:npg_5LdJSKuC8bFY@ep-damp-field-aey694y
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, connect_timeout=10)
+
+
+def _get_admin_auth_config():
+    return {
+        "username": os.getenv("ADMIN_USERNAME", "admin"),
+        "password": os.getenv("ADMIN_PASSWORD", "admin123"),
+        "secret": os.getenv("ADMIN_AUTH_SECRET", "webcloset-admin-secret")
+    }
+
+
+def _create_admin_token(username: str):
+    config = _get_admin_auth_config()
+    issued_at = int(datetime.utcnow().timestamp())
+    expires_at = issued_at + (60 * 60 * 8)  # 8 hours
+    payload = {"username": username, "issued_at": issued_at, "expires_at": expires_at}
+    payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    payload_encoded = base64.urlsafe_b64encode(payload_json.encode("utf-8")).decode("utf-8").rstrip("=")
+    signature = hmac.new(
+        config["secret"].encode("utf-8"),
+        payload_encoded.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    return f"{payload_encoded}.{signature}"
+
+
+def _verify_admin_token(authorization: str | None) -> AdminTokenData:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    token = authorization.replace("Bearer ", "", 1).strip()
+    try:
+        payload_encoded, signature = token.split(".", 1)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    config = _get_admin_auth_config()
+    expected_signature = hmac.new(
+        config["secret"].encode("utf-8"),
+        payload_encoded.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(status_code=401, detail="Invalid token signature")
+
+    padded_payload = payload_encoded + "=" * ((4 - len(payload_encoded) % 4) % 4)
+    try:
+        payload_json = base64.urlsafe_b64decode(padded_payload).decode("utf-8")
+        payload = json.loads(payload_json)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    now_timestamp = int(datetime.utcnow().timestamp())
+    if payload.get("expires_at", 0) < now_timestamp:
+        raise HTTPException(status_code=401, detail="Token expired")
+
+    return AdminTokenData(
+        username=payload.get("username", ""),
+        issued_at=int(payload.get("issued_at", 0)),
+        expires_at=int(payload.get("expires_at", 0))
+    )
+
+
+def _ensure_admin_source_settings_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admin_source_settings (
+            source_code TEXT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+
+
+def _normalize_source_code(source: str) -> str:
+    lowered = source.strip().lower()
+    allowed = {"amazon", "ebay", "reverb"}
+    if lowered not in allowed:
+        raise HTTPException(status_code=400, detail="Unsupported source code")
+    return lowered
+
+
+def _get_source_statuses(cursor):
+    _ensure_admin_source_settings_table(cursor)
+    known_sources = ["amazon", "ebay", "reverb"]
+
+    status_map = {}
+    cursor.execute("SELECT source_code, enabled, updated_at FROM admin_source_settings")
+    for row in cursor.fetchall():
+        status_map[row[0]] = {
+            "enabled": bool(row[1]),
+            "updated_at": row[2].isoformat() if row[2] else None
+        }
+
+    source_statuses = []
+    for source_code in known_sources:
+        cursor.execute(
+            """
+            SELECT COUNT(*)::int
+            FROM item_source
+            WHERE LOWER(marketplace_code) = %s
+            """,
+            (source_code,)
+        )
+        listing_count = cursor.fetchone()[0]
+        status = status_map.get(source_code, {"enabled": True, "updated_at": None})
+        source_statuses.append({
+            "source_code": source_code,
+            "enabled": status["enabled"],
+            "connected": listing_count > 0,
+            "listing_count": listing_count,
+            "updated_at": status["updated_at"]
+        })
+
+    return source_statuses
 
 
 def build_es_query_new(user_query):
@@ -199,6 +333,203 @@ def search_index_new(query_text):
 @newapi.get("/nlp/search/")
 async def nlp_search_items(query: str = Query("", description="NLP Search items")):
     return search_index_new(query)
+
+
+@newapi.post("/admin/login")
+async def admin_login(request: AdminLoginRequest):
+    config = _get_admin_auth_config()
+    if not (
+        secrets.compare_digest(request.username, config["username"])
+        and secrets.compare_digest(request.password, config["password"])
+    ):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    token = _create_admin_token(request.username)
+    token_data = _verify_admin_token(f"Bearer {token}")
+    return {
+        "token": token,
+        "username": request.username,
+        "issued_at": token_data.issued_at,
+        "expires_at": token_data.expires_at
+    }
+
+
+@newapi.get("/admin/overview")
+async def admin_overview(authorization: str | None = Header(default=None)):
+    _verify_admin_token(authorization)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        source_statuses = _get_source_statuses(cursor)
+
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*)::int AS total_rows,
+                COUNT(*) FILTER (WHERE title IS NULL OR TRIM(title) = '')::int AS missing_title,
+                COUNT(*) FILTER (WHERE price_cents IS NULL OR price_cents <= 0)::int AS invalid_price,
+                COUNT(*) FILTER (WHERE image_url IS NULL OR TRIM(image_url) = '')::int AS missing_image
+            FROM item_source
+            """
+        )
+        issue_counts = cursor.fetchone()
+
+        return {
+            "sources": source_statuses,
+            "summary": {
+                "total_listings": issue_counts[0],
+                "missing_title": issue_counts[1],
+                "invalid_price": issue_counts[2],
+                "missing_image": issue_counts[3]
+            }
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@newapi.patch("/admin/sources/{source_code}")
+async def update_source_status(
+    source_code: str,
+    request: AdminSourceToggleRequest,
+    authorization: str | None = Header(default=None)
+):
+    _verify_admin_token(authorization)
+    normalized_source = _normalize_source_code(source_code)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        _ensure_admin_source_settings_table(cursor)
+        cursor.execute(
+            """
+            INSERT INTO admin_source_settings (source_code, enabled, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (source_code)
+            DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()
+            """,
+            (normalized_source, request.enabled)
+        )
+        conn.commit()
+
+        source_statuses = _get_source_statuses(cursor)
+        updated_source = next((s for s in source_statuses if s["source_code"] == normalized_source), None)
+        return {"source": updated_source}
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@newapi.get("/admin/listings")
+async def admin_listings(
+    source: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    authorization: str | None = Header(default=None)
+):
+    _verify_admin_token(authorization)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        where_clause = ""
+        params = []
+        if source and source.strip():
+            normalized_source = _normalize_source_code(source)
+            where_clause = "WHERE LOWER(s.marketplace_code) = %s"
+            params.append(normalized_source)
+
+        params.append(limit)
+        cursor.execute(
+            f"""
+            SELECT
+                s.id,
+                COALESCE(s.title, '') AS title,
+                COALESCE(s.brand, '') AS brand,
+                COALESCE(s.marketplace_code, '') AS source_code,
+                s.price_cents,
+                COALESCE(s.currency, '') AS currency,
+                COALESCE(s.condition, '') AS item_condition,
+                COALESCE(s.seller_url, '') AS seller_url,
+                COALESCE(s.image_url, '') AS image_url
+            FROM item_source s
+            {where_clause}
+            ORDER BY s.id DESC
+            LIMIT %s
+            """,
+            tuple(params)
+        )
+        rows = cursor.fetchall()
+        listings = []
+        for row in rows:
+            listings.append({
+                "id": str(row[0]),
+                "title": row[1],
+                "brand": row[2],
+                "source_code": row[3].lower(),
+                "price_cents": row[4],
+                "currency": row[5],
+                "condition": row[6],
+                "seller_url": row[7],
+                "image_url": row[8]
+            })
+        return {"listings": listings}
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@newapi.get("/admin/issues")
+async def admin_issues(
+    limit: int = Query(default=50, ge=1, le=200),
+    authorization: str | None = Header(default=None)
+):
+    _verify_admin_token(authorization)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                COALESCE(title, '') AS title,
+                COALESCE(marketplace_code, '') AS source_code,
+                CASE
+                    WHEN title IS NULL OR TRIM(title) = '' THEN 'missing_title'
+                    WHEN price_cents IS NULL OR price_cents <= 0 THEN 'invalid_price'
+                    WHEN image_url IS NULL OR TRIM(image_url) = '' THEN 'missing_image'
+                    ELSE 'unknown'
+                END AS issue_type,
+                CASE
+                    WHEN title IS NULL OR TRIM(title) = '' THEN 'Listing is missing a title'
+                    WHEN price_cents IS NULL OR price_cents <= 0 THEN 'Listing has invalid price'
+                    WHEN image_url IS NULL OR TRIM(image_url) = '' THEN 'Listing has missing image'
+                    ELSE 'Unknown issue'
+                END AS issue_message
+            FROM item_source
+            WHERE
+                title IS NULL OR TRIM(title) = ''
+                OR price_cents IS NULL OR price_cents <= 0
+                OR image_url IS NULL OR TRIM(image_url) = ''
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (limit,)
+        )
+        rows = cursor.fetchall()
+        issues = []
+        for row in rows:
+            issues.append({
+                "listing_id": str(row[0]),
+                "title": row[1],
+                "source_code": row[2].lower(),
+                "issue_type": row[3],
+                "issue_message": row[4]
+            })
+        return {"issues": issues}
+    finally:
+        cursor.close()
+        conn.close()
 
 # ----------------------------
 # Generate & Store Script
