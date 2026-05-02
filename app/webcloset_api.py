@@ -208,6 +208,42 @@ def _get_source_statuses(cursor):
     return source_statuses
 
 
+def _get_enabled_marketplace_codes_for_public_search() -> list[str]:
+    """
+    Marketplaces allowed in /nlp/search/ and other public aggregation.
+    Reads admin_source_settings; missing row means enabled (default on).
+    On DB errors, all known sources stay enabled so search does not break.
+    """
+    known = ["amazon", "ebay", "reverb"]
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            _ensure_admin_source_settings_table(cursor)
+            cursor.execute("SELECT source_code, enabled FROM admin_source_settings")
+            rows = {str(r[0]).lower(): bool(r[1]) for r in cursor.fetchall()}
+            enabled = [code for code in known if rows.get(code, True)]
+            return enabled
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception:
+        return list(known)
+
+
+def _filter_es_inner_hits_by_marketplaces(
+    inner_hits: list,
+    allowed_lower: set[str],
+) -> list:
+    out = []
+    for hit in inner_hits:
+        src = hit.get("_source") or {}
+        code = str(src.get("marketplace_code") or "").strip().lower()
+        if code in allowed_lower:
+            out.append(hit)
+    return out
+
+
 def build_es_query_new(user_query):
     q_lower = user_query.lower()
     cheap = any(word in q_lower for word in ["cheap", "affordable", "budget", "under"])
@@ -320,13 +356,21 @@ def build_es_query_new(user_query):
 
 
 def search_index_new(query_text):
+    allowed_codes = _get_enabled_marketplace_codes_for_public_search()
+    if not allowed_codes:
+        return []
+
+    allowed_lower = {c.lower() for c in allowed_codes}
     query = build_es_query_new(query_text)
     es = get_es_connection()
     res = es.search(index="ebay_canonical", body=query)
     # print(res)
     items = []
     for hit in res['hits']['hits']:
-        items.append(hit['inner_hits']['items']['hits']['hits'])
+        inner = hit["inner_hits"]["items"]["hits"]["hits"]
+        filtered = _filter_es_inner_hits_by_marketplaces(inner, allowed_lower)
+        if filtered:
+            items.append(filtered)
     return items
 
 
