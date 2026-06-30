@@ -356,7 +356,7 @@ def build_es_query_new(user_query):
 
 
 def search_index_new(query_text):
-    allowed_codes = _get_enabled_marketplace_codes_for_public_search()
+=    allowed_codes = _get_enabled_marketplace_codes_for_public_search()
     if not allowed_codes:
         return []
 
